@@ -4,3 +4,6 @@ node_modules/
 firebase-service-account.json
 *.log
 .DS_Store
+
+# relay folder secrets
+relay/.env

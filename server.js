@@ -245,6 +245,46 @@ app.post('/admin/api/refresh', async (_req, res) => {
     }
 });
 
+// ─────────── Push endpoint for the residential relay ───────────
+// A small script runs on a residential ISP (laptop / phone with Termux /
+// Tanzanian VPS) and POSTs freshly-minted magic JWTs here. Authenticated by
+// PUSH_SECRET — totally separate from ADMIN_PASSWORD so the relay can be
+// unattended.
+const PUSH_SECRET = process.env.PUSH_SECRET || '';
+if (!PUSH_SECRET || PUSH_SECRET.length < 16) {
+    console.warn('⚠️  PUSH_SECRET is missing or too short. /admin/api/push-token will refuse all pushes.');
+}
+
+app.post('/admin/api/push-token', async (req, res) => {
+    // Shared-secret auth (header preferred, body fallback for tooling)
+    const presented = req.get('x-push-secret') || (req.body && req.body.secret) || '';
+    const a = Buffer.from(String(presented), 'utf8');
+    const b = Buffer.from(String(PUSH_SECRET), 'utf8');
+    if (!PUSH_SECRET || a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) {
+        return res.status(403).json({ ok: false, error: 'bad push secret' });
+    }
+    const jwt = (req.body && req.body.jwt) ? String(req.body.jwt).trim() : '';
+    if (!jwt || !jwt.startsWith('eyJ')) {
+        return res.status(400).json({ ok: false, error: 'missing or invalid jwt field' });
+    }
+    // Decode exp from payload
+    let exp = 0;
+    try {
+        const b64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(Buffer.from(b64 + '='.repeat((4 - b64.length % 4) % 4), 'base64').toString('utf8'));
+        exp = parseInt(payload.exp, 10) || 0;
+    } catch (_) {}
+    if (!exp) return res.status(400).json({ ok: false, error: 'jwt has no parseable exp' });
+    if (exp * 1000 < Date.now()) return res.status(400).json({ ok: false, error: 'jwt is already expired' });
+
+    await store.setCurrentToken(jwt, exp, 'relay');
+    _lastMintAt = Date.now();
+    _lastMintError = null;
+    const remaining = exp - Math.floor(Date.now() / 1000);
+    console.log(`📥 Token pushed by relay. Lifespan ${Math.round(remaining/60)}m. exp=${new Date(exp*1000).toISOString()}`);
+    res.json({ ok: true, exp, lifespanMinutes: Math.round(remaining/60) });
+});
+
 app.post('/admin/api/keys', async (req, res) => {
     const label = (req.body && req.body.label) ? String(req.body.label).slice(0, 80) : '';
     const plaintext = auth.generateApiKey();
