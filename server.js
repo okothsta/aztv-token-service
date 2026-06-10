@@ -418,7 +418,9 @@ document.addEventListener('click', async (e)=>{
   else if(t.id==='save-creds-btn'){const headers=document.getElementById('headers').value;const payload=document.getElementById('payload').value;
     const st=document.getElementById('save-status');st.textContent='Validating…';st.className='muted';
     t.disabled=true; const r=await jpost('/admin/api/credentials',{headers,payload}); t.disabled=false;
-    if(r.ok){st.textContent='✓ Saved. Token lifespan: '+r.lifespanMinutes+' min.';st.className='ok';refreshStatus();}
+    if(r.ok && r.lifespanMinutes){st.textContent='✓ Saved. Token lifespan: '+r.lifespanMinutes+' min.';st.className='ok';refreshStatus();}
+    else if(r.ok && r.mintWarning){st.textContent='⚠ Credentials saved but mint failed: '+r.mintWarning+' — see logs / status panel for next steps.';st.className='warn';refreshStatus();}
+    else if(r.ok){st.textContent='✓ Saved. (No mint result yet, see status panel.)';st.className='ok';refreshStatus();}
     else{st.textContent='✗ '+r.error;st.className='err';}}
   else if(t.id==='create-key-btn'){const label=document.getElementById('key-label').value;
     const r=await jpost('/admin/api/keys',{label});
