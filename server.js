@@ -194,22 +194,43 @@ app.post('/admin/api/credentials', async (req, res) => {
     const { headers, payload } = req.body || {};
     try {
         const parsed = parse.parsePastedCredentials(headers || '', payload || '');
-        // Validate end-to-end with one real mint before saving — guarantees creds work.
+        // ALWAYS save the credentials first — even if the mint test fails. This
+        // way the auto-mint loop can keep retrying from Render's actual IP, and
+        // logs will show the real failure reason. Trying to validate before
+        // saving created a bootstrap loop where bad-mint blocked saving.
+        await store.setCredentials(parsed);
+
+        // Optional best-effort mint to give immediate feedback. Failure here
+        // does NOT undo the save — admin can see the error and let the loop
+        // try again on schedule.
+        let result = null, mintError = null;
         try {
-            const result = await minter.mintToken(parsed);
-            await store.setCredentials(parsed);
+            result = await minter.mintToken(parsed);
             await store.setCurrentToken(result.jwt, result.exp, 'manual');
             _lastMintAt = Date.now();
             _lastMintError = null;
-            res.json({
+        } catch (e) {
+            mintError = e.message || String(e);
+            _lastMintError = { at: Date.now(), message: mintError };
+        }
+
+        if (result) {
+            return res.json({
                 ok: true,
+                saved: true,
                 bearerExp: parsed.bearerExp,
                 tokenExp: result.exp,
                 lifespanMinutes: Math.round((result.exp - Math.floor(Date.now()/1000)) / 60)
             });
-        } catch (mintErr) {
-            return res.status(400).json({ ok: false, error: 'Credentials parsed but mint failed: ' + mintErr.message });
         }
+        // Saved but mint failed — return ok so admin sees creds are stored, but
+        // include the mint error so they know the upstream is rejecting us.
+        return res.json({
+            ok: true,
+            saved: true,
+            mintWarning: mintError,
+            bearerExp: parsed.bearerExp
+        });
     } catch (e) {
         return res.status(400).json({ ok: false, error: e.message });
     }

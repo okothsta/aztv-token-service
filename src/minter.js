@@ -89,58 +89,34 @@ function extractInnerJwt(rawCdnToken) {
  * Hop 2: ask cdnblncr for a manifest, capture the 302 Location, extract the
  * cdnedgch2 path-token JWT.
  *
- * cdnblncr geo-blocks non-East-African IPs. If CF_RELAY_URL + CF_RELAY_SECRET
- * are configured, we route the probe through a Cloudflare Worker running in
- * Dar es Salaam (or another EA PoP) which has a valid in-region egress IP.
- * Otherwise we hit cdnblncr directly (only works from East African IPs).
+ * cdnblncr accepts the request only when the userJwt's `sip` claim matches
+ * the IP making this call. Since api.aztv stamps `sip` with whoever called
+ * IT, those two are always the same machine — so as long as both calls
+ * happen from the same process (which they do), `sip` matches automatically.
+ *
+ * The remaining question is whether cdnblncr's IP allowlist accepts this
+ * machine's egress IP. From a residential ISP: yes. From most cloud
+ * datacenters (Render, GCP, Cloudflare): no. The error in that case is a
+ * 403 from cdnblncr itself, NOT a sip mismatch — they look the same to us.
  *
  * @param {string} userJwt  the JWT from hop 1
- * @returns {{jwt: string, exp: number, raw: string}} the long-lived path-token + decoded exp
+ * @returns {{jwt: string, exp: number, raw: string}}
  */
 async function followCdnRedirect(userJwt) {
-    const cdnUrl = `https://cdnblncr.azamtvltd.co.tz${PROBE_PATH}?cdntoken=${userJwt}`;
-    let status, location;
-
-    if (process.env.CF_RELAY_URL && process.env.CF_RELAY_SECRET) {
-        // Route through the Cloudflare Worker probe to get an East African egress IP.
-        const probeUrl = new URL(process.env.CF_RELAY_URL);
-        probeUrl.pathname = '/redirect-probe';
-        probeUrl.searchParams.set('secret', process.env.CF_RELAY_SECRET);
-        probeUrl.searchParams.set('url', cdnUrl);
-        const opts = {
-            method: 'GET',
-            hostname: probeUrl.hostname,
-            path: probeUrl.pathname + probeUrl.search,
-            headers: { 'accept': 'application/json' },
-            timeout: 20000
-        };
-        const r = await _request(opts, null);
-        if (r.status !== 200) {
-            throw new Error(`CF relay probe HTTP ${r.status}: ${(r.body || '').substring(0, 180)}`);
-        }
-        let info;
-        try { info = JSON.parse(r.body); } catch (_) { throw new Error('CF relay probe returned non-JSON'); }
-        status = info.status;
-        location = info.location;
-    } else {
-        // Direct call (works only from East African IPs).
-        const opts = {
-            method: 'GET',
-            hostname: 'cdnblncr.azamtvltd.co.tz',
-            path: `${PROBE_PATH}?cdntoken=${userJwt}`,
-            headers: { 'user-agent': 'Mozilla/5.0', 'accept': '*/*' },
-            timeout: 15000
-        };
-        const r = await _request(opts, null);
-        status = r.status;
-        location = r.headers && r.headers.location;
+    const opts = {
+        method: 'GET',
+        hostname: 'cdnblncr.azamtvltd.co.tz',
+        path: `${PROBE_PATH}?cdntoken=${userJwt}`,
+        headers: { 'user-agent': 'Mozilla/5.0', 'accept': '*/*' },
+        timeout: 15000
+    };
+    const r = await _request(opts, null);
+    if (r.status !== 302 || !r.headers.location) {
+        throw new Error(`cdnblncr did not redirect (HTTP ${r.status}). Likely cdnblncr is blocking this server's IP range.`);
     }
-
-    if (status !== 302 || !location) {
-        throw new Error(`cdnblncr did not redirect (HTTP ${status}). Set CF_RELAY_URL + CF_RELAY_SECRET env vars to route through Cloudflare for in-region egress.`);
-    }
-    const m = location.match(/\/tok_([^/]+)\//);
-    if (!m) throw new Error('redirect did not contain /tok_<JWT>/ : ' + location.substring(0, 180));
+    const loc = r.headers.location;
+    const m = loc.match(/\/tok_([^/]+)\//);
+    if (!m) throw new Error('redirect did not contain /tok_<JWT>/ : ' + loc.substring(0, 180));
     const pathJwt = m[1];
 
     const payload = decodeJwtPayload(pathJwt);
@@ -148,7 +124,7 @@ async function followCdnRedirect(userJwt) {
     const exp = parseInt(payload.exp, 10) || 0;
     if (!exp) throw new Error('extracted path-token JWT had no exp');
 
-    return { jwt: pathJwt, exp, raw: location };
+    return { jwt: pathJwt, exp, raw: loc };
 }
 
 /**
