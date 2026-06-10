@@ -1,0 +1,18 @@
+{
+  "name": "aztv-token-service",
+  "version": "1.0.0",
+  "description": "Auto-mint AzamMax cdnedgch2 path-tokens for streaming integrations. Single-tenant, API-key gated.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "firebase-admin": "^12.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
