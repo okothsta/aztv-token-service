@@ -37,7 +37,39 @@ subscription and serves them to API-key holders. Runs on Render free tier.
    - `FIREBASE_SERVICE_ACCOUNT_JSON` — paste the full contents of your
      `firebase-service-account.json` file (single line). If you reuse
      the Firebase project from your streaming app, this is the same JSON.
+   - `CF_RELAY_URL` — the Cloudflare Worker URL (see "Geo-block fix" below).
+   - `CF_RELAY_SECRET` — the secret you set on the worker.
 6. Deploy. Wait for the green check.
+
+### Geo-block fix (REQUIRED on Render / any non-EA host)
+
+`cdnblncr.azamtvltd.co.tz` rejects requests from outside East Africa with
+HTTP 403. We get around this by relaying through a Cloudflare Worker that
+runs in Cloudflare's Dar es Salaam (or other EA) PoP.
+
+The worker code lives at `../web_app/cloudflare-worker/worker.js`. If
+that worker is already deployed for your streaming app, you can reuse it:
+
+1. Make sure `worker.js` is the latest (it must include the `/redirect-probe`
+   endpoint added for the AZTV token service).
+2. Deploy:
+   ```
+   cd web_app/cloudflare-worker
+   npx wrangler deploy
+   ```
+3. Set the same secret on both the worker and the token service:
+   ```
+   npx wrangler secret put RELAY_SECRET
+   # paste a long random string when prompted
+   ```
+4. Note the worker URL Cloudflare gives you (looks like
+   `https://your-worker.your-subdomain.workers.dev`).
+5. In Render's environment vars for the token service:
+   - `CF_RELAY_URL` = the worker URL
+   - `CF_RELAY_SECRET` = the same secret you put with `wrangler secret put`
+
+Without this, "Save and validate" in the admin panel will fail with
+`cdnblncr did not redirect (HTTP 403)`.
 
 ### Keep-alive ping (free tier sleeps after 15 min idle)
 
