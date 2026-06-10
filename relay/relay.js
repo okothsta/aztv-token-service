@@ -171,7 +171,7 @@ async function mintMagicToken() {
 
 // ─── Push to service ────────────────────────────────────────────────────
 async function pushToService(magic) {
-    const u = new URL('/admin/api/push-token', SERVICE_URL);
+    const u = new URL('/api/push-token', SERVICE_URL);
     const body = JSON.stringify({ jwt: magic.jwt });
     const opts = {
         method: 'POST',
