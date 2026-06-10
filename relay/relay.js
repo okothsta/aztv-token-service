@@ -216,6 +216,21 @@ async function cycle() {
 }
 
 // ─── Boot ──────────────────────────────────────────────────────────────
-console.log(`AZTV Relay starting. Service=${SERVICE_URL}  Refresh=${REFRESH_HOURS}h`);
-cycle();
-setInterval(cycle, REFRESH_MS);
+// Optional stagger: when running multiple relays (e.g. you + a friend) for
+// redundancy, set MINT_OFFSET_HOURS to a different value on each phone so
+// they don't all hit api.aztv at the same instant. Examples:
+//   Your phone:    MINT_OFFSET_HOURS=0  (start immediately)
+//   Friend 1:      MINT_OFFSET_HOURS=5  (waits 5h before first mint)
+//   Friend 2:      MINT_OFFSET_HOURS=3  (waits 3h)
+// All still mint every REFRESH_HOURS, just on offset schedules.
+const MINT_OFFSET_HOURS = parseFloat(process.env.MINT_OFFSET_HOURS || '0');
+const MINT_OFFSET_MS    = MINT_OFFSET_HOURS * 60 * 60 * 1000;
+
+console.log(`AZTV Relay starting. Service=${SERVICE_URL}  Refresh=${REFRESH_HOURS}h  Offset=${MINT_OFFSET_HOURS}h`);
+if (MINT_OFFSET_MS > 0) {
+    console.log(`[${ts()}] Waiting ${MINT_OFFSET_HOURS}h before first mint (stagger for multi-relay redundancy)...`);
+    setTimeout(() => { cycle(); setInterval(cycle, REFRESH_MS); }, MINT_OFFSET_MS);
+} else {
+    cycle();
+    setInterval(cycle, REFRESH_MS);
+}
