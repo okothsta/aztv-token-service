@@ -280,6 +280,64 @@ app.post('/admin/api/credentials', async (req, res) => {
     }
 });
 
+// Build a ready-to-paste Termux relay config from a messy DevTools blob.
+// The admin pastes ONE blob (payload + headers together, however messy). The
+// server parses out BEARER / SUBSCRIPTION_DTL / CONTENT_DTL, and injects the
+// server-known PUSH_SECRET + SERVICE_URL so the generated .env is ALWAYS
+// correct — no more "bad push secret" mismatches.
+app.post('/admin/api/relay-config', (req, res) => {
+    try {
+        const blob = (req.body && (req.body.blob || req.body.text)) || '';
+        const headers = (req.body && req.body.headers) || blob;
+        const payload = (req.body && req.body.payload) || blob;
+        if (!String(headers).trim() && !String(payload).trim()) {
+            return res.status(400).json({ ok: false, error: 'Paste the DevTools capture first.' });
+        }
+        // Reuse the same tolerant parser the credentials box uses. Passing the
+        // same blob to both args works because extractBearer scans anywhere and
+        // extractPayloadFields grabs the first {...} block.
+        const parsed = parse.parsePastedCredentials(headers, payload);
+
+        const refreshHours = parseInt(process.env.TOKEN_REFRESH_HOURS, 10) || 10;
+        const pushSecret = PUSH_SECRET || '';
+        // Prefer an explicit SERVICE_URL env, else derive from the request host.
+        const host = req.get('x-forwarded-host') || req.get('host') || 'aztv-token-service.onrender.com';
+        const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0];
+        const serviceUrl = (process.env.SERVICE_URL || `${proto}://${host}`).replace(/\/+$/, '');
+
+        const envText =
+`SERVICE_URL=${serviceUrl}
+PUSH_SECRET=${pushSecret}
+BEARER=${parsed.bearer}
+SUBSCRIPTION_DTL=${parsed.subscriptionDtl}
+CONTENT_DTL=${parsed.contentDtl}
+REFRESH_HOURS=${refreshHours}`;
+
+        // One-paste script: cd, stop old relay, write .env, start, tail log.
+        const script =
+`cd ~/aztv-token-service/relay
+pkill -f "node relay.js"; sleep 2
+cat > .env <<'AZTVCONFIG'
+${envText}
+AZTVCONFIG
+nohup node relay.js > relay.log 2>&1 &
+sleep 1
+tail -f relay.log`;
+
+        res.json({
+            ok: true,
+            env: envText,
+            script,
+            bearerExp: parsed.bearerExp,
+            bearerIp: parsed.bearerIp,
+            pushSecretMissing: !pushSecret || pushSecret.length < 16,
+            serviceUrl
+        });
+    } catch (e) {
+        res.status(400).json({ ok: false, error: e.message });
+    }
+});
+
 app.post('/admin/api/refresh', async (_req, res) => {
     try {
         const r = await mintAndStore('manual');
@@ -346,6 +404,14 @@ function dashboardHtml() {
     <label>Payload — view source (paste raw)</label>
     <textarea id="payload" rows="6" placeholder='{"offlineDownload":false,"subscriptionDtl":"...","contentDtl":"...","deviceId":"..."}'></textarea>
     <div class="row"><button id="save-creds-btn">Save and validate</button><span id="save-status" class="muted"></span></div>
+  </section>
+
+  <section class="card"><h2>1b. Termux relay setup (one-paste generator)</h2>
+    <p class="muted">If this server's host is geo-blocked, the relay must run on a residential IP (your Termux phone). Paste the <b>same DevTools capture</b> below (the whole messy blob — payload and headers together, however you copied it). The server cleans it up and fills in the push secret + service URL automatically, so it's always correct.</p>
+    <label>Paste DevTools capture (payload + headers, any mess)</label>
+    <textarea id="relay-blob" rows="6" placeholder='Paste everything you copied from the authToken request here — payload JSON and request headers together is fine.'></textarea>
+    <div class="row"><button id="gen-relay-btn">Generate Termux commands</button><span id="relay-status" class="muted"></span></div>
+    <div id="relay-out"></div>
   </section>
 
   <section class="card"><h2>2. API keys for customers</h2>
@@ -417,6 +483,12 @@ async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'content
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return r.json();}
 function fmtTs(t){if(!t)return '—';if(typeof t==='object'&&t._seconds)t=t._seconds*1000;return new Date(t).toLocaleString();}
 function fmtExp(s){if(!s)return '—';const r=parseInt(s,10)-Math.floor(Date.now()/1000);return new Date(parseInt(s,10)*1000).toLocaleString()+' ('+(r>0?Math.round(r/60)+'m left':'EXPIRED')+')';}
+function copyText(txt, btn, label){
+  function done(){const o=btn.textContent;btn.textContent='✓ Copied';setTimeout(function(){btn.textContent=label||o;},1500);}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){fallback();});}
+  else fallback();
+  function fallback(){const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);done();}
+}
 
 async function refreshStatus(){
   const s=await jget('/admin/api/status');
@@ -473,7 +545,28 @@ document.addEventListener('click', async (e)=>{
       out.innerHTML='<div class="new-key"><b>NEW API KEY (shown ONCE — copy now):</b><br>'+r.key+'</div>';
       document.getElementById('key-label').value=''; refreshStatus();
     } else alert('Failed: '+(r.error||'unknown'));}
-  else if(t.dataset.toggle){const id=t.dataset.toggle;const wasDisabled=t.dataset.disabled==='true';
+  else if(t.id==='gen-relay-btn'){const blob=document.getElementById('relay-blob').value;
+    const st=document.getElementById('relay-status');st.textContent='Parsing…';st.className='muted';
+    t.disabled=true; const r=await jpost('/admin/api/relay-config',{blob}); t.disabled=false;
+    const out=document.getElementById('relay-out');
+    if(!r.ok){st.textContent='✗ '+r.error;st.className='err';out.innerHTML='';return;}
+    st.textContent='✓ Generated. Copy the command below into Termux.';st.className='ok';
+    var warn = r.pushSecretMissing ? '<p class="err">⚠ PUSH_SECRET is not set on this server. Set the PUSH_SECRET env var on Render (16+ chars) and regenerate, or pushes will be rejected.</p>' : '';
+    var expTxt = r.bearerExp ? fmtExp(r.bearerExp) : '—';
+    out.innerHTML =
+      warn +
+      '<div class="kv" style="margin-top:12px"><b>Service URL:</b><span>'+r.serviceUrl+'</span>'+
+      '<b>Bearer expires:</b><span>'+expTxt+'</span>'+
+      '<b>Relay IP (from Bearer):</b><span>'+(r.bearerIp||'—')+'</span></div>'+
+      '<label style="margin-top:14px">Run this single block in Termux (copy all):</label>'+
+      '<pre id="relay-script"></pre>'+
+      '<div class="row"><button id="copy-script-btn">Copy Termux command</button>'+
+      '<button class="ghost" id="copy-env-btn">Copy .env only</button></div>';
+    document.getElementById('relay-script').textContent = r.script;
+    window.__relayScript = r.script; window.__relayEnv = r.env;
+  }
+  else if(t.id==='copy-script-btn'){copyText(window.__relayScript, t, 'Copy Termux command');}
+  else if(t.id==='copy-env-btn'){copyText(window.__relayEnv, t, 'Copy .env only');}
     await jpost('/admin/api/keys/'+id,{disabled:!wasDisabled}); refreshStatus();}
   else if(t.dataset.delete){const id=t.dataset.delete;if(!confirm('Delete this key permanently?'))return;
     await jdel('/admin/api/keys/'+id); refreshStatus();}
