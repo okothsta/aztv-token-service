@@ -305,21 +305,57 @@ app.post('/admin/api/relay-config', (req, res) => {
         const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0];
         const serviceUrl = (process.env.SERVICE_URL || `${proto}://${host}`).replace(/\/+$/, '');
 
-        const envText =
-`SERVICE_URL=${serviceUrl}
-PUSH_SECRET=${pushSecret}
-BEARER=${parsed.bearer}
-SUBSCRIPTION_DTL=${parsed.subscriptionDtl}
-CONTENT_DTL=${parsed.contentDtl}
-REFRESH_HOURS=${refreshHours}`;
+        // ── Multi-phone redundancy ──────────────────────────────────────
+        // Several phones can run the relay at once so that if some go offline,
+        // others keep the token fresh. To avoid all phones minting at the same
+        // instant, we stagger them: phone N waits (REFRESH_HOURS * (N-1)/TOTAL)
+        // hours before its first mint, then mints every REFRESH_HOURS like the
+        // rest. Pushes are idempotent (the service just keeps the newest token),
+        // so overlap is harmless — it's pure safety margin.
+        let relayNumber = parseInt(req.body && req.body.relayNumber, 10);
+        let totalRelays = parseInt(req.body && req.body.totalRelays, 10);
+        if (!Number.isFinite(relayNumber) || relayNumber < 1) relayNumber = 1;
+        if (!Number.isFinite(totalRelays) || totalRelays < 1) totalRelays = 1;
+        if (relayNumber > totalRelays) relayNumber = totalRelays;
+        const offsetHours = totalRelays > 1
+            ? Math.round((refreshHours * (relayNumber - 1) / totalRelays) * 100) / 100
+            : 0;
 
-        // One-paste script: cd, stop old relay, write .env, start, tail log.
+        const envLines = [
+            `SERVICE_URL=${serviceUrl}`,
+            `PUSH_SECRET=${pushSecret}`,
+            `BEARER=${parsed.bearer}`,
+            `SUBSCRIPTION_DTL=${parsed.subscriptionDtl}`,
+            `CONTENT_DTL=${parsed.contentDtl}`,
+            `REFRESH_HOURS=${refreshHours}`
+        ];
+        if (offsetHours > 0) envLines.push(`MINT_OFFSET_HOURS=${offsetHours}`);
+        const envText = envLines.join('\n');
+
+        // One-paste UPDATE script: for a phone that already has the relay
+        // installed. cd, stop old relay, write .env, start, tail log.
         const script =
 `cd ~/aztv-token-service/relay
 pkill -f "node relay.js"; sleep 2
 cat > .env <<'AZTVCONFIG'
 ${envText}
 AZTVCONFIG
+termux-wake-lock 2>/dev/null
+nohup node relay.js > relay.log 2>&1 &
+sleep 1
+tail -f relay.log`;
+
+        // FIRST-TIME script: for a brand-new phone with nothing installed yet.
+        // Installs Node + git, clones the repo, writes .env, starts the relay.
+        const firstTimeScript =
+`pkg update -y && pkg install -y nodejs git
+cd ~
+git clone https://github.com/okothsta/aztv-token-service.git 2>/dev/null || echo "already cloned, continuing"
+cd ~/aztv-token-service/relay
+cat > .env <<'AZTVCONFIG'
+${envText}
+AZTVCONFIG
+termux-wake-lock 2>/dev/null
 nohup node relay.js > relay.log 2>&1 &
 sleep 1
 tail -f relay.log`;
@@ -328,6 +364,10 @@ tail -f relay.log`;
             ok: true,
             env: envText,
             script,
+            firstTimeScript,
+            relayNumber,
+            totalRelays,
+            offsetHours,
             bearerExp: parsed.bearerExp,
             bearerIp: parsed.bearerIp,
             pushSecretMissing: !pushSecret || pushSecret.length < 16,
@@ -407,9 +447,19 @@ function dashboardHtml() {
   </section>
 
   <section class="card"><h2>1b. Termux relay setup (one-paste generator)</h2>
-    <p class="muted">If this server's host is geo-blocked, the relay must run on a residential IP (your Termux phone). Paste the <b>same DevTools capture</b> below (the whole messy blob — payload and headers together, however you copied it). The server cleans it up and fills in the push secret + service URL automatically, so it's always correct.</p>
+    <p class="muted">If this server's host is geo-blocked, the relay must run on a residential IP (an Android phone with Termux). Paste the <b>same DevTools capture</b> below (the whole messy blob — payload and headers together, however you copied it). The server cleans it up and fills in the push secret + service URL automatically, so it's always correct.</p>
     <label>Paste DevTools capture (payload + headers, any mess)</label>
     <textarea id="relay-blob" rows="6" placeholder='Paste everything you copied from the authToken request here — payload JSON and request headers together is fine.'></textarea>
+    <p class="muted" style="margin-top:14px"><b>Running several phones for backup?</b> So the relay never goes down, you can run it on several phones at once. If one phone dies, the others keep the token fresh. Tell each phone its number so they take turns minting (no clashes).</p>
+    <div class="row">
+      <label style="margin:0">This phone is number
+        <input id="relay-number" type="number" min="1" value="1" style="width:70px;display:inline-block">
+      </label>
+      <label style="margin:0">out of total phones
+        <input id="relay-total" type="number" min="1" value="1" style="width:70px;display:inline-block">
+      </label>
+    </div>
+    <p class="muted">Example: 4 phones → phone 1 = (1, 4), phone 2 = (2, 4), phone 3 = (3, 4), phone 4 = (4, 4). Generate once per phone, changing only "this phone is number".</p>
     <div class="row"><button id="gen-relay-btn">Generate Termux commands</button><span id="relay-status" class="muted"></span></div>
     <div id="relay-out"></div>
   </section>
@@ -546,26 +596,40 @@ document.addEventListener('click', async (e)=>{
       document.getElementById('key-label').value=''; refreshStatus();
     } else alert('Failed: '+(r.error||'unknown'));}
   else if(t.id==='gen-relay-btn'){const blob=document.getElementById('relay-blob').value;
+    const relayNumber=parseInt(document.getElementById('relay-number').value,10)||1;
+    const totalRelays=parseInt(document.getElementById('relay-total').value,10)||1;
     const st=document.getElementById('relay-status');st.textContent='Parsing…';st.className='muted';
-    t.disabled=true; const r=await jpost('/admin/api/relay-config',{blob}); t.disabled=false;
+    t.disabled=true; const r=await jpost('/admin/api/relay-config',{blob,relayNumber,totalRelays}); t.disabled=false;
     const out=document.getElementById('relay-out');
     if(!r.ok){st.textContent='✗ '+r.error;st.className='err';out.innerHTML='';return;}
-    st.textContent='✓ Generated. Copy the command below into Termux.';st.className='ok';
+    st.textContent='✓ Generated for phone '+r.relayNumber+' of '+r.totalRelays+'. Copy a command below into Termux.';st.className='ok';
     var warn = r.pushSecretMissing ? '<p class="err">⚠ PUSH_SECRET is not set on this server. Set the PUSH_SECRET env var on Render (16+ chars) and regenerate, or pushes will be rejected.</p>' : '';
     var expTxt = r.bearerExp ? fmtExp(r.bearerExp) : '—';
+    var staggerTxt = r.offsetHours>0 ? ('Phone '+r.relayNumber+' of '+r.totalRelays+' — waits '+r.offsetHours+'h before its first mint, then every '+ (r.env.match(/REFRESH_HOURS=(\\d+)/)?RegExp.$1:'10') +'h. This staggers the phones so they take turns.') : 'Single phone — mints immediately, then every cycle.';
     out.innerHTML =
       warn +
-      '<div class="kv" style="margin-top:12px"><b>Service URL:</b><span>'+r.serviceUrl+'</span>'+
+      '<div class="kv" style="margin-top:12px"><b>This phone:</b><span>number '+r.relayNumber+' of '+r.totalRelays+'</span>'+
+      '<b>Schedule:</b><span>'+staggerTxt+'</span>'+
+      '<b>Service URL:</b><span>'+r.serviceUrl+'</span>'+
       '<b>Bearer expires:</b><span>'+expTxt+'</span>'+
       '<b>Relay IP (from Bearer):</b><span>'+(r.bearerIp||'—')+'</span></div>'+
-      '<label style="margin-top:14px">Run this single block in Termux (copy all):</label>'+
+      '<h3 style="margin:18px 0 4px;font-size:14px">▶ Brand-new phone (nothing installed yet)</h3>'+
+      '<p class="muted">Install Termux from F-Droid first (not Play Store). Open it, then paste this ONE block. It installs everything, downloads the relay, and starts it.</p>'+
+      '<pre id="relay-firstscript"></pre>'+
+      '<div class="row"><button id="copy-first-btn">Copy first-time setup command</button></div>'+
+      '<h3 style="margin:22px 0 4px;font-size:14px">▶ Phone that already has the relay (just updating tokens)</h3>'+
+      '<p class="muted">If this phone already ran the relay before, paste this shorter block instead. It refreshes the tokens and restarts.</p>'+
       '<pre id="relay-script"></pre>'+
-      '<div class="row"><button id="copy-script-btn">Copy Termux command</button>'+
-      '<button class="ghost" id="copy-env-btn">Copy .env only</button></div>';
+      '<div class="row"><button id="copy-script-btn">Copy update command</button>'+
+      '<button class="ghost" id="copy-env-btn">Copy .env only</button></div>'+
+      '<h3 style="margin:22px 0 4px;font-size:14px">After pasting</h3>'+
+      '<p class="muted">You should see <span class="ok">✓ Minted magic JWT</span> then <span class="ok">✓ Service accepted token</span>. That phone is now live. Press the volume-down + C keys (Ctrl+C) to stop watching the log — the relay keeps running in the background. To keep it alive: Android Settings → Apps → Termux → Battery → Unrestricted.</p>';
+    document.getElementById('relay-firstscript').textContent = r.firstTimeScript;
     document.getElementById('relay-script').textContent = r.script;
-    window.__relayScript = r.script; window.__relayEnv = r.env;
+    window.__relayScript = r.script; window.__relayEnv = r.env; window.__relayFirst = r.firstTimeScript;
   }
-  else if(t.id==='copy-script-btn'){copyText(window.__relayScript, t, 'Copy Termux command');}
+  else if(t.id==='copy-first-btn'){copyText(window.__relayFirst, t, 'Copy first-time setup command');}
+  else if(t.id==='copy-script-btn'){copyText(window.__relayScript, t, 'Copy update command');}
   else if(t.id==='copy-env-btn'){copyText(window.__relayEnv, t, 'Copy .env only');}
     await jpost('/admin/api/keys/'+id,{disabled:!wasDisabled}); refreshStatus();}
   else if(t.dataset.delete){const id=t.dataset.delete;if(!confirm('Delete this key permanently?'))return;
