@@ -368,6 +368,7 @@ tail -f relay.log`;
             relayNumber,
             totalRelays,
             offsetHours,
+            refreshHours,
             bearerExp: parsed.bearerExp,
             bearerIp: parsed.bearerIp,
             pushSecretMissing: !pushSecret || pushSecret.length < 16,
@@ -605,7 +606,7 @@ document.addEventListener('click', async (e)=>{
     st.textContent='✓ Generated for phone '+r.relayNumber+' of '+r.totalRelays+'. Copy a command below into Termux.';st.className='ok';
     var warn = r.pushSecretMissing ? '<p class="err">⚠ PUSH_SECRET is not set on this server. Set the PUSH_SECRET env var on Render (16+ chars) and regenerate, or pushes will be rejected.</p>' : '';
     var expTxt = r.bearerExp ? fmtExp(r.bearerExp) : '—';
-    var staggerTxt = r.offsetHours>0 ? ('Phone '+r.relayNumber+' of '+r.totalRelays+' — waits '+r.offsetHours+'h before its first mint, then every '+ (r.env.match(/REFRESH_HOURS=(\\d+)/)?RegExp.$1:'10') +'h. This staggers the phones so they take turns.') : 'Single phone — mints immediately, then every cycle.';
+    var staggerTxt = r.offsetHours>0 ? ('Phone '+r.relayNumber+' of '+r.totalRelays+' — waits '+r.offsetHours+'h before its first mint, then every '+(r.refreshHours||10)+'h. This staggers the phones so they take turns.') : 'Single phone — mints immediately, then every cycle.';
     out.innerHTML =
       warn +
       '<div class="kv" style="margin-top:12px"><b>This phone:</b><span>number '+r.relayNumber+' of '+r.totalRelays+'</span>'+
@@ -631,6 +632,7 @@ document.addEventListener('click', async (e)=>{
   else if(t.id==='copy-first-btn'){copyText(window.__relayFirst, t, 'Copy first-time setup command');}
   else if(t.id==='copy-script-btn'){copyText(window.__relayScript, t, 'Copy update command');}
   else if(t.id==='copy-env-btn'){copyText(window.__relayEnv, t, 'Copy .env only');}
+  else if(t.dataset.toggle){const id=t.dataset.toggle;const wasDisabled=t.dataset.disabled==='true';
     await jpost('/admin/api/keys/'+id,{disabled:!wasDisabled}); refreshStatus();}
   else if(t.dataset.delete){const id=t.dataset.delete;if(!confirm('Delete this key permanently?'))return;
     await jdel('/admin/api/keys/'+id); refreshStatus();}
