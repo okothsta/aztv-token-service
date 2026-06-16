@@ -138,13 +138,21 @@ Lifespan ~30 days. When it expires, the relay logs:
 Refresh it: log into web.azamtvmax.com again, capture the new
 authorization header from DevTools, paste into `.env`, restart the relay.
 
-`SUBSCRIPTION_DTL` and `CONTENT_DTL` change less often — usually just when
-your subscription renews or AzamTV updates their backend. Capture all
-three together when refreshing.
+`SUBSCRIPTION_DTL` is now **auto-refreshed** by the relay on every cycle —
+it fetches a fresh value from the `currentSubscription` endpoint using the
+Bearer. (AzamMax expires the subscriptionDtl roughly every 12h, which used
+to break the relay with "Invalid subscriptionDtl".) You no longer paste it.
+
+`CONTENT_DTL` is stable (tied to content rights valid for years), so it's
+still set once from the payload. Capture it together with the Bearer when
+the Bearer expires (~monthly).
 
 ## Troubleshooting
 
 - **"BEARER is expired"** → re-capture from web.azamtvmax.com.
+- **"Invalid subscriptionDtl"** → should no longer happen (auto-refreshed).
+  If you still see it, the auto-fetch may be failing — check for a
+  "Could not refresh subscriptionDtl" warning just above it in the log.
 - **"cdnblncr did not redirect (HTTP 403)"** → this box's IP is on the
   blocklist. Try a different residential IP, or check if you have a VPN
   on (turn it off).

@@ -35,8 +35,13 @@ loadDotEnvIfPresent();
 const SERVICE_URL    = required('SERVICE_URL');     // https://aztv-token-service.onrender.com
 const PUSH_SECRET    = required('PUSH_SECRET');
 const BEARER         = required('BEARER');
-const SUBSCRIPTION_DTL = required('SUBSCRIPTION_DTL');
+const SUBSCRIPTION_DTL = process.env.SUBSCRIPTION_DTL || '';  // optional now — fetched live each cycle
 const CONTENT_DTL    = required('CONTENT_DTL');
+const PROFILE_ID     = process.env.PROFILE_ID || '24338457';
+
+// Account id is embedded in the Bearer's `iss` claim, e.g. "4158795_<deviceUuid>".
+// Used to build the currentSubscription URL that yields a fresh subscriptionDtl.
+let ACCOUNT_ID = process.env.ACCOUNT_ID || '';
 
 // How often to mint. The magic JWT lives ~12h; we refresh well before expiry.
 const REFRESH_HOURS = parseFloat(process.env.REFRESH_HOURS || '10');
@@ -99,27 +104,75 @@ function decodeJwtPayload(jwt) {
 }
 
 // ─── Mint flow ──────────────────────────────────────────────────────────
+// Shared headers for api.aztv.videoready.tv calls.
+function aztvHeaders(extra) {
+    return Object.assign({
+        'authorization':     'Bearer ' + BEARER,
+        'accept':            'application/json, text/plain, */*',
+        'origin':            'https://web.azamtvmax.com',
+        'referer':           'https://web.azamtvmax.com/',
+        'platform':          'WEB',
+        'tenant_identifier': 'master',
+        'profileId':         PROFILE_ID,
+        'user-agent':        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36'
+    }, extra || {});
+}
+
+// Fetch a FRESH subscriptionDtl. AzamMax expires the subscriptionDtl roughly
+// every ~12h, which is what used to kill the relay ("Invalid subscriptionDtl").
+// The currentSubscription endpoint returns the live value as `packValidationCode`,
+// authenticated by the long-lived Bearer (~30 days). We refresh it every cycle so
+// the relay runs hands-off for a month. contentDtl, by contrast, is stable (tied to
+// content rights valid for years) so we keep reusing the one from .env.
+async function fetchFreshSubscriptionDtl() {
+    if (!ACCOUNT_ID) {
+        const bp = decodeJwtPayload(BEARER);
+        ACCOUNT_ID = (bp && typeof bp.iss === 'string') ? bp.iss.split('_')[0] : '';
+        if (!ACCOUNT_ID) throw new Error('could not derive ACCOUNT_ID from Bearer iss');
+    }
+    const opts = {
+        method: 'GET',
+        hostname: 'api.aztv.videoready.tv',
+        path: `/subscription-service/v1/${ACCOUNT_ID}/currentSubscription`,
+        headers: aztvHeaders(),
+        timeout: 15000
+    };
+    const r = await _request(opts, null);
+    if (r.status !== 200) throw new Error(`currentSubscription HTTP ${r.status}: ${(r.body||'').substring(0,160)}`);
+    const j = JSON.parse(r.body);
+    const dtl = j && j.data && j.data.packValidationCode;
+    if (!dtl) throw new Error('currentSubscription response had no data.packValidationCode');
+    return String(dtl).trim();
+}
+
 async function callAuthApi() {
+    // Always try to refresh subscriptionDtl live; fall back to the .env value
+    // only if the fetch fails (and one exists), so we degrade gracefully.
+    let subscriptionDtl;
+    try {
+        subscriptionDtl = await fetchFreshSubscriptionDtl();
+        console.log(`[${ts()}] ↻ Refreshed subscriptionDtl from currentSubscription (len ${subscriptionDtl.length}).`);
+    } catch (e) {
+        if (SUBSCRIPTION_DTL) {
+            console.error(`[${ts()}] ⚠ Could not refresh subscriptionDtl (${e.message}); falling back to .env value.`);
+            subscriptionDtl = SUBSCRIPTION_DTL;
+        } else {
+            throw new Error(`subscriptionDtl refresh failed and no SUBSCRIPTION_DTL in .env: ${e.message}`);
+        }
+    }
     const body = JSON.stringify({
         offlineDownload: false,
-        subscriptionDtl: SUBSCRIPTION_DTL,
+        subscriptionDtl: subscriptionDtl,
         contentDtl:      CONTENT_DTL
     });
     const opts = {
         method: 'POST',
         hostname: 'api.aztv.videoready.tv',
         path: '/drm-auth-integration/v1/drm/authToken',
-        headers: {
-            'authorization':     'Bearer ' + BEARER,
-            'content-type':      'application/json',
-            'content-length':    Buffer.byteLength(body),
-            'accept':            'application/json',
-            'origin':            'https://web.azamtvmax.com',
-            'referer':           'https://web.azamtvmax.com/',
-            'platform':          'WEB',
-            'tenant_identifier': 'master',
-            'user-agent':        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36'
-        },
+        headers: aztvHeaders({
+            'content-type':   'application/json',
+            'content-length': Buffer.byteLength(body)
+        }),
         timeout: 15000
     };
     const r = await _request(opts, body);

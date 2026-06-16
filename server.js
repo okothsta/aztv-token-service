@@ -321,12 +321,22 @@ app.post('/admin/api/relay-config', (req, res) => {
             ? Math.round((refreshHours * (relayNumber - 1) / totalRelays) * 100) / 100
             : 0;
 
+        // profileId appears in the headers blob as e.g. "profileid24338457" or
+        // "profileId: 24338457". Extract it so the relay's API calls match the
+        // account; default to the known web profile if not found.
+        let profileId = '24338457';
+        const pidMatch = String(headers).match(/profile[_-]?id["':\s]*([0-9]{4,})/i);
+        if (pidMatch) profileId = pidMatch[1];
+
         const envLines = [
             `SERVICE_URL=${serviceUrl}`,
             `PUSH_SECRET=${pushSecret}`,
             `BEARER=${parsed.bearer}`,
+            // subscriptionDtl is auto-refreshed every cycle from currentSubscription
+            // (it expires ~12h). Kept here only as a fallback if that fetch fails.
             `SUBSCRIPTION_DTL=${parsed.subscriptionDtl}`,
             `CONTENT_DTL=${parsed.contentDtl}`,
+            `PROFILE_ID=${profileId}`,
             `REFRESH_HOURS=${refreshHours}`
         ];
         if (offsetHours > 0) envLines.push(`MINT_OFFSET_HOURS=${offsetHours}`);
