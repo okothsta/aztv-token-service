@@ -343,9 +343,12 @@ app.post('/admin/api/relay-config', (req, res) => {
         const envText = envLines.join('\n');
 
         // One-paste UPDATE script: for a phone that already has the relay
-        // installed. cd, stop old relay, write .env, start, tail log.
+        // installed. cd, pull latest code (so it gets the auto-refresh relay),
+        // stop old relay, write .env, start, tail log.
         const script =
-`cd ~/aztv-token-service/relay
+`cd ~/aztv-token-service
+git pull 2>/dev/null || echo "(git pull skipped)"
+cd ~/aztv-token-service/relay
 pkill -f "node relay.js"; sleep 2
 cat > .env <<'AZTVCONFIG'
 ${envText}
@@ -458,7 +461,7 @@ function dashboardHtml() {
   </section>
 
   <section class="card"><h2>1b. Termux relay setup (one-paste generator)</h2>
-    <p class="muted">If this server's host is geo-blocked, the relay must run on a residential IP (an Android phone with Termux). Paste the <b>same DevTools capture</b> below (the whole messy blob — payload and headers together, however you copied it). The server cleans it up and fills in the push secret + service URL automatically, so it's always correct.</p>
+    <p class="muted">If this server's host is geo-blocked, the relay must run on a residential IP (an Android phone with Termux). Paste the <b>same DevTools capture</b> below (the whole messy blob — payload and headers together, however you copied it). The server cleans it up and fills in the push secret + service URL automatically, so it's always correct. The relay then auto-refreshes the subscription detail every cycle, so it runs hands-off until the Bearer expires (~monthly).</p>
     <label>Paste DevTools capture (payload + headers, any mess)</label>
     <textarea id="relay-blob" rows="6" placeholder='Paste everything you copied from the authToken request here — payload JSON and request headers together is fine.'></textarea>
     <p class="muted" style="margin-top:14px"><b>Running several phones for backup?</b> So the relay never goes down, you can run it on several phones at once. If one phone dies, the others keep the token fresh. Tell each phone its number so they take turns minting (no clashes).</p>
@@ -634,7 +637,7 @@ document.addEventListener('click', async (e)=>{
       '<div class="row"><button id="copy-script-btn">Copy update command</button>'+
       '<button class="ghost" id="copy-env-btn">Copy .env only</button></div>'+
       '<h3 style="margin:22px 0 4px;font-size:14px">After pasting</h3>'+
-      '<p class="muted">You should see <span class="ok">✓ Minted magic JWT</span> then <span class="ok">✓ Service accepted token</span>. That phone is now live. Press the volume-down + C keys (Ctrl+C) to stop watching the log — the relay keeps running in the background. To keep it alive: Android Settings → Apps → Termux → Battery → Unrestricted.</p>';
+      '<p class="muted">You should see <span class="ok">↻ Refreshed subscriptionDtl</span>, then <span class="ok">✓ Minted magic JWT</span>, then <span class="ok">✓ Service accepted token</span>. That phone is now live and keeps itself fresh automatically — it re-fetches the subscription detail every cycle, so you only need to come back here when the Bearer expires (about once a month). Press Ctrl+C to stop watching the log — the relay keeps running in the background. To keep it alive: Android Settings → Apps → Termux → Battery → Unrestricted.</p>';
     document.getElementById('relay-firstscript').textContent = r.firstTimeScript;
     document.getElementById('relay-script').textContent = r.script;
     window.__relayScript = r.script; window.__relayEnv = r.env; window.__relayFirst = r.firstTimeScript;
