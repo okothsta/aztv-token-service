@@ -582,6 +582,8 @@ async function jget(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status)
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b||{})});return r.json();}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return r.json();}
 function fmtTs(t){if(!t)return '—';if(typeof t==='object'&&t._seconds)t=t._seconds*1000;return new Date(t).toLocaleString();}
+function tsToMs(t){if(!t)return 0;if(typeof t==='object'&&t._seconds)return t._seconds*1000;var n=Number(t);return isNaN(n)?0:n;}
+function fmtAgo(ms){if(!ms)return '—';var d=Date.now()-ms;if(d<0)d=0;return fmtDuration(d)+' ago';}
 function fmtExp(s){if(!s)return '—';const r=parseInt(s,10)-Math.floor(Date.now()/1000);return new Date(parseInt(s,10)*1000).toLocaleString()+' ('+(r>0?Math.round(r/60)+'m left':'EXPIRED')+')';}
 function fmtDuration(ms){if(ms<=0)return '0s';var s=Math.floor(ms/1000);var d=Math.floor(s/86400);s-=d*86400;var h=Math.floor(s/3600);s-=h*3600;var m=Math.floor(s/60);s-=m*60;var parts=[];if(d)parts.push(d+'d');if(h)parts.push(h+'h');if(m)parts.push(m+'m');parts.push(s+'s');return parts.slice(0,3).join(' ');}
 function fmtAccess(expiresAt){
@@ -625,9 +627,10 @@ async function refreshStatus(){
   window.__keys = s.keys;
   s.keys.forEach(k=>{
     const tr=document.createElement('tr');
+    var lastMs=tsToMs(k.lastUsedAt);
     tr.innerHTML='<td>'+(k.label||'(no label)')+'<br><small class="muted">'+k.id+'</small></td>'+
       '<td>'+(k.requestCount||0)+'</td>'+
-      '<td>'+fmtTs(k.lastUsedAt)+'</td>'+
+      '<td>'+(lastMs?('<span data-ago="'+lastMs+'">'+fmtAgo(lastMs)+'</span><br><small class="muted">'+new Date(lastMs).toLocaleString()+'</small>'):'<span class="muted">never</span>')+'</td>'+
       '<td>'+fmtAccess(k.expiresAt)+'</td>'+
       '<td>'+(k.disabled?'<span class="warn">disabled</span>':'<span class="ok">active</span>')+'</td>'+
       '<td><button class="ghost" data-eye="'+k.id+'">👁</button> '+
@@ -635,15 +638,24 @@ async function refreshStatus(){
           '<button class="danger" data-delete="'+k.id+'">Delete</button></td>';
     tb.appendChild(tr);
     // hidden detail/expiry row
-    const dr=document.createElement('tr');
+    var createdMs=tsToMs(k.createdAt);
+    var reqCount=k.requestCount||0;
+    var ageMs=createdMs?(Date.now()-createdMs):0;
+    var ageDays=ageMs/86400000;
+    var perDay=ageDays>=0.5?(reqCount/ageDays):reqCount;
+    var perHour=ageMs>=3600000?(reqCount/(ageMs/3600000)):reqCount;
+    var dr=document.createElement('tr');
     dr.id='detail-'+k.id; dr.style.display='none';
     dr.innerHTML='<td colspan="6"><div class="keydetail">'+
       '<div class="kv">'+
         '<b>Key ID:</b><span>'+k.id+'</span>'+
         '<b>Label:</b><span>'+(k.label||'(no label)')+'</span>'+
-        '<b>Created:</b><span>'+fmtTs(k.createdAt)+'</span>'+
-        '<b>Last used:</b><span>'+fmtTs(k.lastUsedAt)+'</span>'+
-        '<b>Total requests:</b><span>'+(k.requestCount||0)+'</span>'+
+        '<b>Created:</b><span>'+fmtTs(k.createdAt)+(createdMs?(' <small class="muted">('+fmtAgo(createdMs)+')</small>'):'')+'</span>'+
+        '<b>Last used:</b><span>'+(lastMs?('<span data-ago="'+lastMs+'">'+fmtAgo(lastMs)+'</span> <small class="muted">('+new Date(lastMs).toLocaleString()+')</small>'):'never')+'</span>'+
+        '<b>Total requests:</b><span>'+reqCount+'</span>'+
+        '<b>Avg per day:</b><span>'+(createdMs?perDay.toFixed(1):'—')+'</span>'+
+        '<b>Avg per hour:</b><span>'+(createdMs?perHour.toFixed(2):'—')+'</span>'+
+        '<b>Active for:</b><span>'+(createdMs?fmtDuration(ageMs):'—')+'</span>'+
         '<b>State:</b><span>'+(k.disabled?'disabled':'active')+'</span>'+
         '<b>Access expires:</b><span>'+fmtAccess(k.expiresAt)+'</span>'+
         '<b>Secret key:</b><span class="muted">hidden (stored hashed — not recoverable)</span>'+
@@ -730,12 +742,16 @@ document.addEventListener('click', async (e)=>{
 
 refreshStatus();
 setInterval(refreshStatus, 15000);
-// Live countdown: update access-expiry cells every second without refetching.
+// Live countdown + last-used stopwatch: update every second without refetching.
 setInterval(function(){
   document.querySelectorAll('[data-exp]').forEach(function(el){
     var at=Number(el.getAttribute('data-exp'));var rem=at-Date.now();
     if(rem<=0){el.className='err';el.innerHTML='ENDED '+new Date(at).toLocaleString();}
     else{el.className=rem<3600000?'warn':'ok';el.innerHTML=fmtDuration(rem)+' left<br><small class="muted">'+new Date(at).toLocaleString()+'</small>';}
+  });
+  document.querySelectorAll('[data-ago]').forEach(function(el){
+    var ms=Number(el.getAttribute('data-ago'));
+    el.textContent=fmtAgo(ms);
   });
 }, 1000);
 `;
