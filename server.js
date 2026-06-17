@@ -221,6 +221,7 @@ app.get('/admin/api/status', async (_req, res) => {
     const keysSafe = keys.map(k => ({
         id: k.id, label: k.label || '',
         disabled: !!k.disabled,
+        expiresAt: k.expiresAt || null,
         requestCount: k.requestCount || 0,
         createdAt: k.createdAt || null,
         lastUsedAt: k.lastUsedAt || null
@@ -417,6 +418,40 @@ app.post('/admin/api/keys/:id', async (req, res) => {
     res.json({ ok: true });
 });
 
+// Set/extend/clear a key's access deadline.
+//   body { addMs }       -> add this many ms to the current deadline
+//                           (or to "now" if no deadline / already expired)
+//   body { setAt }       -> set the deadline to an absolute unix-ms time
+//   body { clear: true } -> remove the deadline (unlimited again)
+app.post('/admin/api/keys/:id/expiry', async (req, res) => {
+    try {
+        const body = req.body || {};
+        if (body.clear) {
+            await store.setApiKeyExpiry(req.params.id, null);
+            return res.json({ ok: true, expiresAt: null });
+        }
+        if (Number.isFinite(Number(body.setAt))) {
+            const at = Number(body.setAt);
+            await store.setApiKeyExpiry(req.params.id, at);
+            return res.json({ ok: true, expiresAt: at });
+        }
+        const addMs = Number(body.addMs);
+        if (!Number.isFinite(addMs) || addMs <= 0) {
+            return res.status(400).json({ ok: false, error: 'Provide addMs (>0), setAt, or clear:true' });
+        }
+        // Base the addition on the existing future deadline, else on now.
+        const keys = await store.listApiKeys();
+        const k = keys.find(x => x.id === req.params.id);
+        if (!k) return res.status(404).json({ ok: false, error: 'Key not found' });
+        const base = (k.expiresAt && Number(k.expiresAt) > Date.now()) ? Number(k.expiresAt) : Date.now();
+        const next = base + addMs;
+        await store.setApiKeyExpiry(req.params.id, next);
+        res.json({ ok: true, expiresAt: next });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
 app.delete('/admin/api/keys/:id', async (req, res) => {
     await store.deleteApiKey(req.params.id);
     res.json({ ok: true });
@@ -482,7 +517,7 @@ function dashboardHtml() {
     <p class="muted">Each customer gets one key. Send it to them as <code>X-Api-Key: &lt;key&gt;</code> header (or <code>?key=&lt;key&gt;</code> query). The plaintext is shown <b>once</b> on creation — store it safely.</p>
     <div class="row"><input id="key-label" placeholder="Label (e.g. Friend John, MyApp staging)"><button id="create-key-btn">Generate new API key</button></div>
     <div id="new-key-out"></div>
-    <table id="keys-table"><thead><tr><th>Label</th><th>Requests</th><th>Last used</th><th>State</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="keys-table"><thead><tr><th>Label</th><th>Requests</th><th>Last used</th><th>Access expires</th><th>State</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
   <section class="card"><h2>How to integrate</h2>
@@ -539,6 +574,7 @@ pre { background:#0a0a0a; border:1px solid #222; border-radius:6px; padding:12px
 .kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 16px; font-size:13px; margin-top:8px; }
 .kv b { color:#aaa; font-weight:500; }
 .new-key { background:#1a2f1a; border:1px solid #2c5c2c; padding:12px; border-radius:6px; margin-top:12px; font-family:ui-monospace,monospace; word-break:break-all; }
+.keydetail { background:#0d0d0d; border:1px solid #222; border-radius:6px; padding:14px; }
 `;
 
 const DASHBOARD_JS = `
@@ -547,6 +583,14 @@ async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'content
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return r.json();}
 function fmtTs(t){if(!t)return '—';if(typeof t==='object'&&t._seconds)t=t._seconds*1000;return new Date(t).toLocaleString();}
 function fmtExp(s){if(!s)return '—';const r=parseInt(s,10)-Math.floor(Date.now()/1000);return new Date(parseInt(s,10)*1000).toLocaleString()+' ('+(r>0?Math.round(r/60)+'m left':'EXPIRED')+')';}
+function fmtDuration(ms){if(ms<=0)return '0s';var s=Math.floor(ms/1000);var d=Math.floor(s/86400);s-=d*86400;var h=Math.floor(s/3600);s-=h*3600;var m=Math.floor(s/60);s-=m*60;var parts=[];if(d)parts.push(d+'d');if(h)parts.push(h+'h');if(m)parts.push(m+'m');parts.push(s+'s');return parts.slice(0,3).join(' ');}
+function fmtAccess(expiresAt){
+  if(!expiresAt)return '<span class="muted">unlimited</span>';
+  var at=Number(expiresAt);var rem=at-Date.now();
+  if(rem<=0)return '<span class="err" data-exp="'+at+'">ENDED '+new Date(at).toLocaleString()+'</span>';
+  var cls=rem<3600000?'warn':'ok';
+  return '<span class="'+cls+'" data-exp="'+at+'">'+fmtDuration(rem)+' left<br><small class="muted">'+new Date(at).toLocaleString()+'</small></span>';
+}
 function copyText(txt, btn, label){
   function done(){const o=btn.textContent;btn.textContent='✓ Copied';setTimeout(function(){btn.textContent=label||o;},1500);}
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){fallback();});}
@@ -578,15 +622,40 @@ async function refreshStatus(){
 
   // keys
   const tb=document.querySelector('#keys-table tbody'); tb.innerHTML='';
+  window.__keys = s.keys;
   s.keys.forEach(k=>{
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+(k.label||'(no label)')+'<br><small class="muted">'+k.id+'</small></td>'+
       '<td>'+(k.requestCount||0)+'</td>'+
       '<td>'+fmtTs(k.lastUsedAt)+'</td>'+
+      '<td>'+fmtAccess(k.expiresAt)+'</td>'+
       '<td>'+(k.disabled?'<span class="warn">disabled</span>':'<span class="ok">active</span>')+'</td>'+
-      '<td><button class="ghost" data-toggle="'+k.id+'" data-disabled="'+(!!k.disabled)+'">'+(k.disabled?'Enable':'Disable')+'</button> '+
+      '<td><button class="ghost" data-eye="'+k.id+'">👁</button> '+
+          '<button class="ghost" data-toggle="'+k.id+'" data-disabled="'+(!!k.disabled)+'">'+(k.disabled?'Enable':'Disable')+'</button> '+
           '<button class="danger" data-delete="'+k.id+'">Delete</button></td>';
     tb.appendChild(tr);
+    // hidden detail/expiry row
+    const dr=document.createElement('tr');
+    dr.id='detail-'+k.id; dr.style.display='none';
+    dr.innerHTML='<td colspan="6"><div class="keydetail">'+
+      '<div class="kv">'+
+        '<b>Key ID:</b><span>'+k.id+'</span>'+
+        '<b>Label:</b><span>'+(k.label||'(no label)')+'</span>'+
+        '<b>Created:</b><span>'+fmtTs(k.createdAt)+'</span>'+
+        '<b>Last used:</b><span>'+fmtTs(k.lastUsedAt)+'</span>'+
+        '<b>Total requests:</b><span>'+(k.requestCount||0)+'</span>'+
+        '<b>State:</b><span>'+(k.disabled?'disabled':'active')+'</span>'+
+        '<b>Access expires:</b><span>'+fmtAccess(k.expiresAt)+'</span>'+
+        '<b>Secret key:</b><span class="muted">hidden (stored hashed — not recoverable)</span>'+
+      '</div>'+
+      '<div class="row" style="margin-top:10px"><b style="font-size:12px;color:#aaa">Add access time:</b>'+
+        '<button class="ghost" data-add="'+k.id+'" data-ms="'+(60*60*1000)+'">+1 hour</button>'+
+        '<button class="ghost" data-add="'+k.id+'" data-ms="'+(24*60*60*1000)+'">+1 day</button>'+
+        '<button class="ghost" data-add="'+k.id+'" data-ms="'+(7*24*60*60*1000)+'">+7 days</button>'+
+        '<button class="ghost" data-add="'+k.id+'" data-ms="'+(30*24*60*60*1000)+'">+30 days</button>'+
+        '<button class="danger" data-clear="'+k.id+'">Remove deadline (unlimited)</button>'+
+      '</div></div></td>';
+    tb.appendChild(dr);
   });
 }
 
@@ -645,6 +714,14 @@ document.addEventListener('click', async (e)=>{
   else if(t.id==='copy-first-btn'){copyText(window.__relayFirst, t, 'Copy first-time setup command');}
   else if(t.id==='copy-script-btn'){copyText(window.__relayScript, t, 'Copy update command');}
   else if(t.id==='copy-env-btn'){copyText(window.__relayEnv, t, 'Copy .env only');}
+  else if(t.dataset.eye){const id=t.dataset.eye;const dr=document.getElementById('detail-'+id);
+    if(dr)dr.style.display=(dr.style.display==='none'?'table-row':'none');}
+  else if(t.dataset.add){const id=t.dataset.add;const ms=parseInt(t.dataset.ms,10);
+    t.disabled=true;const r=await jpost('/admin/api/keys/'+id+'/expiry',{addMs:ms});t.disabled=false;
+    if(!r.ok)alert('Failed: '+r.error);else refreshStatus();}
+  else if(t.dataset.clear){const id=t.dataset.clear;if(!confirm('Remove the access deadline? This key will work with no time limit.'))return;
+    const r=await jpost('/admin/api/keys/'+id+'/expiry',{clear:true});
+    if(!r.ok)alert('Failed: '+r.error);else refreshStatus();}
   else if(t.dataset.toggle){const id=t.dataset.toggle;const wasDisabled=t.dataset.disabled==='true';
     await jpost('/admin/api/keys/'+id,{disabled:!wasDisabled}); refreshStatus();}
   else if(t.dataset.delete){const id=t.dataset.delete;if(!confirm('Delete this key permanently?'))return;
@@ -653,6 +730,14 @@ document.addEventListener('click', async (e)=>{
 
 refreshStatus();
 setInterval(refreshStatus, 15000);
+// Live countdown: update access-expiry cells every second without refetching.
+setInterval(function(){
+  document.querySelectorAll('[data-exp]').forEach(function(el){
+    var at=Number(el.getAttribute('data-exp'));var rem=at-Date.now();
+    if(rem<=0){el.className='err';el.innerHTML='ENDED '+new Date(at).toLocaleString();}
+    else{el.className=rem<3600000?'warn':'ok';el.innerHTML=fmtDuration(rem)+' left<br><small class="muted">'+new Date(at).toLocaleString()+'</small>';}
+  });
+}, 1000);
 `;
 
 function escapeHtml(s){return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}

@@ -43,6 +43,11 @@ async function requireApiKey(req, res, next) {
     const found = await findApiKeyByHash(hash);
     if (!found) return res.status(403).json({ error: 'Invalid API key' });
     if (found.disabled) return res.status(403).json({ error: 'API key disabled' });
+    // Time-limited access: if a deadline is set and has passed, refuse until
+    // the admin adds more time. expiresAt is unix ms (null/absent = unlimited).
+    if (found.expiresAt && Number(found.expiresAt) < Date.now()) {
+        return res.status(403).json({ error: 'API key access period has ended. Contact admin to renew.' });
+    }
     req.apiKey = { id: found.id, label: found.label || '' };
     bumpApiKeyUsage(found.id).catch(() => {});
     next();

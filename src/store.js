@@ -112,10 +112,18 @@ async function setApiKeyDisabled(keyId, disabled) {
     await API_KEYS_COL().doc(keyId).update({ disabled: !!disabled });
 }
 
+// Set (or clear) an access deadline for a key. expiresAt is unix ms, or null
+// to make the key unlimited again.
+async function setApiKeyExpiry(keyId, expiresAt) {
+    await API_KEYS_COL().doc(keyId).update({
+        expiresAt: (expiresAt === null || expiresAt === undefined) ? null : Number(expiresAt)
+    });
+}
+
 module.exports = {
     initFirestore,
     getCredentials, setCredentials,
     getCurrentToken, setCurrentToken,
     listApiKeys, saveApiKey, findApiKeyByHash, bumpApiKeyUsage,
-    deleteApiKey, setApiKeyDisabled
+    deleteApiKey, setApiKeyDisabled, setApiKeyExpiry
 };
