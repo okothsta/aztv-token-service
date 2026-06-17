@@ -571,12 +571,12 @@ Or use the helper endpoint:
 const BASE_CSS = `
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-body { margin:0; background:#0a0a0a; color:#eee; font-family:system-ui,-apple-system,Segoe UI,sans-serif; line-height:1.5; }
+body { margin:0; background:#070708; background-image:radial-gradient(1200px 600px at 80% -10%, rgba(44,123,229,.10), transparent 60%), radial-gradient(900px 500px at -10% 10%, rgba(92,240,154,.06), transparent 55%); color:#eaeaea; font-family:system-ui,-apple-system,Segoe UI,sans-serif; line-height:1.5; min-height:100vh; }
 body.centered { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
-header { display:flex; align-items:center; justify-content:space-between; padding:16px 24px; border-bottom:1px solid #222; }
-header h1 { font-size:18px; margin:0; }
+header { display:flex; align-items:center; justify-content:space-between; padding:16px 24px; border-bottom:1px solid #1c1c1f; background:rgba(12,12,14,.7); backdrop-filter:blur(8px); position:sticky; top:0; z-index:10; }
+header h1 { font-size:18px; margin:0; background:linear-gradient(90deg,#fff,#9fc6ff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
 main { max-width:920px; margin:0 auto; padding:24px; display:grid; gap:20px; }
-.card { background:#141414; border:1px solid #222; border-radius:10px; padding:20px; }
+.card { background:linear-gradient(180deg,#161618,#125 0%,#141416); background:#141416; border:1px solid #232327; border-radius:14px; padding:20px; box-shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 10px 30px -20px rgba(0,0,0,.8); }
 .card h2 { margin-top:0; font-size:16px; }
 .muted { color:#888; font-size:13px; }
 input, textarea, button { font:inherit; }
@@ -584,10 +584,12 @@ input[type=text], input[type=password], input:not([type]), textarea {
   width:100%; background:#0a0a0a; color:#eee; border:1px solid #2a2a2a; border-radius:6px; padding:10px 12px; margin-top:4px; }
 textarea { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; resize:vertical; }
 label { display:block; font-size:12px; color:#aaa; margin-top:10px; }
-button { background:#2c7be5; color:#fff; border:0; border-radius:6px; padding:10px 16px; cursor:pointer; }
-button:hover { background:#1f5fb5; }
-button.ghost { background:transparent; border:1px solid #333; color:#ccc; }
-button.danger { background:#9b1c1c; }
+button { background:linear-gradient(180deg,#3b86ec,#2c6fd6); color:#fff; border:0; border-radius:8px; padding:10px 16px; cursor:pointer; font-weight:500; box-shadow:0 6px 16px -8px rgba(44,123,229,.8); transition:transform .05s ease, filter .15s ease; }
+button:hover { filter:brightness(1.08); }
+button:active { transform:translateY(1px); }
+button.ghost { background:transparent; border:1px solid #34343a; color:#ccc; box-shadow:none; }
+button.ghost:hover { border-color:#4a4a52; background:rgba(255,255,255,.03); }
+button.danger { background:linear-gradient(180deg,#b52323,#8f1818); box-shadow:0 6px 16px -8px rgba(155,28,28,.8); }
 .row { display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap; }
 .err { color:#ff6b6b; }
 .ok { color:#5cf09a; }
@@ -609,6 +611,12 @@ pre { background:#0a0a0a; border:1px solid #222; border-radius:6px; padding:12px
 .banner { padding:14px 16px; border-radius:8px; margin-bottom:16px; font-size:14px; }
 .banner.bad  { background:#2a0f0f; border:1px solid #6b1c1c; color:#ff8a8a; }
 .banner.warn { background:#2a230f; border:1px solid #6b561c; color:#ffce6b; }
+.cd-pill { display:inline-block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-weight:600; font-size:13px; letter-spacing:.3px; padding:3px 10px; border-radius:6px; border:1px solid transparent; }
+.cd-pill.good { color:#5cf09a; background:rgba(92,240,154,.08); border-color:rgba(92,240,154,.25); }
+.cd-pill.mid  { color:#7cc4ff; background:rgba(124,196,255,.08); border-color:rgba(124,196,255,.25); }
+.cd-pill.warn { color:#ffce6b; background:rgba(255,206,107,.10); border-color:rgba(255,206,107,.30); animation:cdpulse 1.4s ease-in-out infinite; }
+.cd-pill.bad  { color:#ff8a8a; background:rgba(255,138,138,.10); border-color:rgba(255,138,138,.35); }
+@keyframes cdpulse { 0%,100%{opacity:1} 50%{opacity:.55} }
 `;
 
 const DASHBOARD_JS = `
@@ -627,6 +635,19 @@ function fmtAccess(expiresAt){
   var cls=rem<3600000?'warn':'ok';
   return '<span class="'+cls+'" data-exp="'+at+'">'+fmtDuration(rem)+' left<br><small class="muted">'+new Date(at).toLocaleString()+'</small></span>';
 }
+// A live-ticking countdown to an absolute unix-ms time. Updated every second by
+// the ticker below via the [data-countdown] hook. Used for token + bearer exp.
+function liveCountdown(atMs){
+  if(!atMs||isNaN(atMs))return '<span class="muted">—</span>';
+  return '<span data-countdown="'+atMs+'">'+renderCountdown(atMs)+'</span>';
+}
+function renderCountdown(atMs){
+  var rem=atMs-Date.now();
+  var when=new Date(atMs).toLocaleString();
+  if(rem<=0)return '<span class="cd-pill bad">EXPIRED</span> <small class="muted">'+when+'</small>';
+  var cls=rem<3600000?'warn':(rem<24*3600000?'mid':'good');
+  return '<span class="cd-pill '+cls+'">'+fmtDuration(rem)+' left</span> <small class="muted">'+when+'</small>';
+}
 function copyText(txt, btn, label){
   function done(){const o=btn.textContent;btn.textContent='✓ Copied';setTimeout(function(){btn.textContent=label||o;},1500);}
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){fallback();});}
@@ -640,7 +661,7 @@ async function refreshStatus(){
   let html='';
   if(!c){html+='<p class="warn">No credentials saved yet. Paste them below.</p>';}
   else{html+='<div class="kv">';
-    html+='<b>Bearer expires:</b><span>'+fmtExp(c.bearerExp)+'</span>';
+    html+='<b>Bearer expires:</b><span>'+liveCountdown(parseInt(c.bearerExp,10)*1000)+'</span>';
     html+='<b>Bearer ipAddress:</b><span>'+c.bearerIp+'</span>';
     html+='<b>Bearer iss:</b><span>'+c.bearerIss+'</span>';
     html+='<b>deviceId:</b><span>'+(c.deviceId||'—')+'</span>';
@@ -649,7 +670,7 @@ async function refreshStatus(){
     html+='<b>creds saved at:</b><span>'+fmtTs(c.updatedAt)+'</span>';
   html+='</div>';}
   if(t){html+='<div class="kv" style="margin-top:14px">';
-    html+='<b>Current token exp:</b><span>'+fmtExp(t.exp)+'</span>';
+    html+='<b>Current token exp:</b><span>'+liveCountdown(parseInt(t.exp,10)*1000)+'</span>';
     html+='<b>Source:</b><span>'+t.source+'</span>';
     html+='<b>Minted at:</b><span>'+fmtTs(t.mintedAt)+'</span>';
   html+='</div>';}
@@ -659,22 +680,23 @@ async function refreshStatus(){
   // ── Health badges + alert banners ──
   var badges=[]; var banners=[];
   var nowMs=s.serverNow||Date.now();
+  var skew=Date.now()-nowMs; // align server time to local clock for live ticking
   // Token health
-  if(t && t.exp){var tRem=parseInt(t.exp,10)*1000-nowMs;
-    if(tRem>0)badges.push('<span class="badge good">● Token valid '+fmtDuration(tRem)+'</span>');
+  if(t && t.exp){var tAt=parseInt(t.exp,10)*1000+skew;
+    if(tAt-Date.now()>0)badges.push('<span class="badge good">● Token valid <b data-bcd="'+tAt+'"></b></span>');
     else badges.push('<span class="badge bad">● Token EXPIRED</span>');
   } else badges.push('<span class="badge bad">● No token</span>');
   // Relay health (last push/mint time)
-  if(s.lastMintAt){var rAgo=nowMs-s.lastMintAt;
-    if(rAgo<13*3600000)badges.push('<span class="badge good">● Relay pushed '+fmtDuration(rAgo)+' ago</span>');
-    else badges.push('<span class="badge bad">● Relay silent '+fmtDuration(rAgo)+'</span>');
+  if(s.lastMintAt){var rAt=s.lastMintAt+skew;var rAgo=Date.now()-rAt;
+    if(rAgo<13*3600000)badges.push('<span class="badge good">● Relay pushed <b data-bago="'+rAt+'"></b> ago</span>');
+    else badges.push('<span class="badge bad">● Relay silent <b data-bago="'+rAt+'"></b></span>');
     if(rAgo>=13*3600000)banners.push(['bad','⚠ No fresh token in '+fmtDuration(rAgo)+'. All relay phones may be offline — customers will stop streaming soon. Check the Termux phones.']);
   } else badges.push('<span class="badge warn">● Relay never pushed</span>');
   // Bearer expiry
-  if(c && c.bearerExp){var bRem=parseInt(c.bearerExp,10)*1000-nowMs;
+  if(c && c.bearerExp){var bAt=parseInt(c.bearerExp,10)*1000+skew;var bRem=bAt-Date.now();
     if(bRem<=0){badges.push('<span class="badge bad">● Bearer EXPIRED</span>');banners.push(['bad','⛔ The Bearer has EXPIRED. Minting is dead until you recapture it from web.azamtvmax.com and paste it above.']);}
-    else if(bRem<3*86400000){badges.push('<span class="badge warn">● Bearer expires in '+fmtDuration(bRem)+'</span>');banners.push(['warn','⚠ Bearer expires in '+fmtDuration(bRem)+'. Recapture it from web.azamtvmax.com soon, or the whole system stops when it lapses.']);}
-    else badges.push('<span class="badge good">● Bearer valid '+fmtDuration(bRem)+'</span>');
+    else if(bRem<3*86400000){badges.push('<span class="badge warn">● Bearer expires in <b data-bcd="'+bAt+'"></b></span>');banners.push(['warn','⚠ Bearer expires in '+fmtDuration(bRem)+'. Recapture it from web.azamtvmax.com soon, or the whole system stops when it lapses.']);}
+    else badges.push('<span class="badge good">● Bearer valid <b data-bcd="'+bAt+'"></b></span>');
   }
   document.getElementById('health-badges').innerHTML=badges.join('');
   document.getElementById('alert-banner').innerHTML=banners.map(function(b){return '<div class="banner '+b[0]+'">'+b[1]+'</div>';}).join('');
@@ -811,6 +833,17 @@ setInterval(function(){
   document.querySelectorAll('[data-ago]').forEach(function(el){
     var ms=Number(el.getAttribute('data-ago'));
     el.textContent=fmtAgo(ms);
+  });
+  document.querySelectorAll('[data-countdown]').forEach(function(el){
+    el.innerHTML=renderCountdown(Number(el.getAttribute('data-countdown')));
+  });
+  document.querySelectorAll('[data-bcd]').forEach(function(el){
+    var rem=Number(el.getAttribute('data-bcd'))-Date.now();
+    el.textContent=rem>0?fmtDuration(rem):'expired';
+  });
+  document.querySelectorAll('[data-bago]').forEach(function(el){
+    var d=Date.now()-Number(el.getAttribute('data-bago'));if(d<0)d=0;
+    el.textContent=fmtDuration(d);
   });
 }, 1000);
 `;
