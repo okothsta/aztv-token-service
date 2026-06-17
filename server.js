@@ -544,7 +544,7 @@ function dashboardHtml() {
     <p class="muted">Each customer gets one key. Send it to them as <code>X-Api-Key: &lt;key&gt;</code> header (or <code>?key=&lt;key&gt;</code> query). The plaintext is shown <b>once</b> on creation — store it safely.</p>
     <div class="row"><input id="key-label" placeholder="Label (e.g. Friend John, MyApp staging)"><button id="create-key-btn">Generate new API key</button></div>
     <div id="new-key-out"></div>
-    <table id="keys-table"><thead><tr><th>Label</th><th>Requests</th><th>Last used</th><th>Access expires</th><th>State</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="table-wrap"><table id="keys-table"><thead><tr><th>Label</th><th>Requests</th><th>Last used</th><th>Access expires</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section class="card"><h2>How to integrate</h2>
@@ -639,6 +639,33 @@ pre { background:#0a0a0a; border:1px solid #222; border-radius:6px; padding:12px
 .hero-chip.warn { color:#ffce6b; border-color:rgba(255,206,107,.3); background:rgba(255,206,107,.08); }
 .hero-chip.bad  { color:#ff8a8a; border-color:rgba(255,138,138,.35); background:rgba(255,138,138,.1); }
 @media (max-width:560px){ .hero-meta{display:none} }
+
+/* ─── Mobile / responsive ─── */
+.table-wrap { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+@media (max-width:640px){
+  main { padding:14px; gap:14px; }
+  header { padding:12px 14px; }
+  .card { padding:15px; border-radius:12px; }
+  .hero { flex-wrap:wrap; padding:14px; }
+  .kv { grid-template-columns:1fr; gap:2px 0; }
+  .kv b { margin-top:8px; }
+  textarea { font-size:11px; }
+  /* Buttons go full-width-ish and stack nicely in rows */
+  .row { gap:6px; }
+  .row button { flex:1 1 auto; }
+  /* Keys table: let it scroll horizontally rather than crushing */
+  #keys-table { min-width:560px; }
+  #keys-table th, #keys-table td { padding:8px 8px; font-size:12px; }
+  /* Detail panel buttons wrap */
+  .keydetail .row button { flex:1 1 40%; }
+  .badges { gap:6px; }
+  .badge { font-size:11px; padding:4px 8px; }
+}
+@media (max-width:400px){
+  .hero-title { font-size:14px; }
+  .hero-sub { font-size:12px; }
+  #keys-table .ghost, #keys-table .danger { padding:7px 9px; }
+}
 `;
 
 const DASHBOARD_JS = `
