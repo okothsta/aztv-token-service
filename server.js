@@ -35,6 +35,30 @@ const app = express();
 app.disable('x-powered-by');
 // Render terminates TLS at its proxy; trust X-Forwarded-* so rate-limit + Secure cookies behave.
 app.set('trust proxy', 1);
+
+// ─────────── Security headers (applied to every response) ───────────
+// No external dependency (helmet) needed — these are the high-value ones.
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');      // stop MIME sniffing
+    res.setHeader('X-Frame-Options', 'DENY');                // block clickjacking of the admin panel
+    res.setHeader('Referrer-Policy', 'no-referrer');         // don't leak the admin URL
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    // Strict transport security only matters over HTTPS (Render serves TLS).
+    if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    // CSP for the admin HTML pages. The dashboard uses one inline <script> and
+    // inline styles, so we allow 'unsafe-inline' for those but lock everything
+    // else down to same-origin. This blocks injected external scripts.
+    if (req.path === '/admin/' || req.path === '/admin/login') {
+        res.setHeader('Content-Security-Policy',
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    }
+    next();
+});
+
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 
@@ -231,6 +255,7 @@ app.get('/admin/api/status', async (_req, res) => {
         token: token ? { exp: token.exp, source: token.source, mintedAt: token.mintedAt, hasJwt: !!token.jwt } : null,
         lastMintAt: _lastMintAt || null,
         lastMintError: _lastMintError,
+        serverNow: Date.now(),
         keys: keysSafe
     });
 });
@@ -482,7 +507,8 @@ function dashboardHtml() {
 <form method="post" action="/admin/logout" style="margin:0"><button class="ghost" type="submit">Logout</button></form>
 </header>
 <main>
-  <section class="card" id="status-card"><h2>Status</h2><div id="status">loading…</div>
+  <div id="alert-banner"></div>
+  <section class="card" id="status-card"><h2>Status</h2><div id="health-badges" class="badges"></div><div id="status">loading…</div>
     <div class="row"><button id="refresh-btn">Mint new token now</button></div>
   </section>
 
@@ -575,6 +601,14 @@ pre { background:#0a0a0a; border:1px solid #222; border-radius:6px; padding:12px
 .kv b { color:#aaa; font-weight:500; }
 .new-key { background:#1a2f1a; border:1px solid #2c5c2c; padding:12px; border-radius:6px; margin-top:12px; font-family:ui-monospace,monospace; word-break:break-all; }
 .keydetail { background:#0d0d0d; border:1px solid #222; border-radius:6px; padding:14px; }
+.badges { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+.badge { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid #333; display:inline-flex; align-items:center; gap:6px; }
+.badge.good { background:#10240f; border-color:#2c5c2c; color:#5cf09a; }
+.badge.bad  { background:#2a0f0f; border-color:#6b1c1c; color:#ff8a8a; }
+.badge.warn { background:#2a230f; border-color:#6b561c; color:#ffce6b; }
+.banner { padding:14px 16px; border-radius:8px; margin-bottom:16px; font-size:14px; }
+.banner.bad  { background:#2a0f0f; border:1px solid #6b1c1c; color:#ff8a8a; }
+.banner.warn { background:#2a230f; border:1px solid #6b561c; color:#ffce6b; }
 `;
 
 const DASHBOARD_JS = `
@@ -621,6 +655,29 @@ async function refreshStatus(){
   html+='</div>';}
   if(s.lastMintError){html+='<p class="err">Last mint error: '+s.lastMintError.message+'</p>';}
   document.getElementById('status').innerHTML=html;
+
+  // ── Health badges + alert banners ──
+  var badges=[]; var banners=[];
+  var nowMs=s.serverNow||Date.now();
+  // Token health
+  if(t && t.exp){var tRem=parseInt(t.exp,10)*1000-nowMs;
+    if(tRem>0)badges.push('<span class="badge good">● Token valid '+fmtDuration(tRem)+'</span>');
+    else badges.push('<span class="badge bad">● Token EXPIRED</span>');
+  } else badges.push('<span class="badge bad">● No token</span>');
+  // Relay health (last push/mint time)
+  if(s.lastMintAt){var rAgo=nowMs-s.lastMintAt;
+    if(rAgo<13*3600000)badges.push('<span class="badge good">● Relay pushed '+fmtDuration(rAgo)+' ago</span>');
+    else badges.push('<span class="badge bad">● Relay silent '+fmtDuration(rAgo)+'</span>');
+    if(rAgo>=13*3600000)banners.push(['bad','⚠ No fresh token in '+fmtDuration(rAgo)+'. All relay phones may be offline — customers will stop streaming soon. Check the Termux phones.']);
+  } else badges.push('<span class="badge warn">● Relay never pushed</span>');
+  // Bearer expiry
+  if(c && c.bearerExp){var bRem=parseInt(c.bearerExp,10)*1000-nowMs;
+    if(bRem<=0){badges.push('<span class="badge bad">● Bearer EXPIRED</span>');banners.push(['bad','⛔ The Bearer has EXPIRED. Minting is dead until you recapture it from web.azamtvmax.com and paste it above.']);}
+    else if(bRem<3*86400000){badges.push('<span class="badge warn">● Bearer expires in '+fmtDuration(bRem)+'</span>');banners.push(['warn','⚠ Bearer expires in '+fmtDuration(bRem)+'. Recapture it from web.azamtvmax.com soon, or the whole system stops when it lapses.']);}
+    else badges.push('<span class="badge good">● Bearer valid '+fmtDuration(bRem)+'</span>');
+  }
+  document.getElementById('health-badges').innerHTML=badges.join('');
+  document.getElementById('alert-banner').innerHTML=banners.map(function(b){return '<div class="banner '+b[0]+'">'+b[1]+'</div>';}).join('');
 
   // keys
   const tb=document.querySelector('#keys-table tbody'); tb.innerHTML='';
@@ -687,9 +744,11 @@ document.addEventListener('click', async (e)=>{
     const r=await jpost('/admin/api/keys',{label});
     if(r.ok){
       const out=document.getElementById('new-key-out');
-      out.innerHTML='<div class="new-key"><b>NEW API KEY (shown ONCE — copy now):</b><br>'+r.key+'</div>';
+      out.innerHTML='<div class="new-key"><b>NEW API KEY (shown ONCE — copy now):</b><br><span id="newkey-val">'+r.key+'</span><br><button class="ghost" id="copy-newkey-btn" style="margin-top:8px">Copy key</button></div>';
+      window.__newKey=r.key;
       document.getElementById('key-label').value=''; refreshStatus();
     } else alert('Failed: '+(r.error||'unknown'));}
+  else if(t.id==='copy-newkey-btn'){copyText(window.__newKey, t, 'Copy key');}
   else if(t.id==='gen-relay-btn'){const blob=document.getElementById('relay-blob').value;
     const relayNumber=parseInt(document.getElementById('relay-number').value,10)||1;
     const totalRelays=parseInt(document.getElementById('relay-total').value,10)||1;
