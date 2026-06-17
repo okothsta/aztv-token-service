@@ -680,6 +680,10 @@ function copyText(txt, btn, label){
 async function refreshStatus(){
   const s=await jget('/admin/api/status');
   const c=s.credentials, t=s.token;
+  var nowMs0=s.serverNow||Date.now();
+  var skew=Date.now()-nowMs0; // align server time to local clock for live ticking
+  // When was the stored token actually minted? (survives server restarts)
+  var lastPushMs=(t && t.mintedAt)?tsToMs(t.mintedAt):(s.lastMintAt||0);
   let html='';
   if(!c){html+='<p class="warn">No credentials saved yet. Paste them below.</p>';}
   else{html+='<div class="kv">';
@@ -696,22 +700,34 @@ async function refreshStatus(){
     html+='<b>Source:</b><span>'+t.source+'</span>';
     html+='<b>Minted at:</b><span>'+fmtTs(t.mintedAt)+'</span>';
   html+='</div>';}
-  if(s.lastMintError){html+='<p class="err">Last mint error: '+s.lastMintError.message+'</p>';}
+  if(s.lastMintError){
+    // The server's OWN mint attempts fail because Render's IP is geo-blocked —
+    // this is EXPECTED and harmless when the relay is supplying tokens. Only
+    // surface it as an error if the relay token is also stale/missing.
+    var relayFresh = lastPushMs && (Date.now()-(lastPushMs+skew))<13*3600000;
+    if(relayFresh){
+      html+='<p class="muted">Note: server self-mint is blocked by geo (expected) — the relay is supplying tokens, so this is fine. ('+s.lastMintError.message.substring(0,80)+')</p>';
+    } else {
+      html+='<p class="err">Last mint error: '+s.lastMintError.message+'</p>';
+    }
+  }
   document.getElementById('status').innerHTML=html;
 
   // ── Health badges + alert banners ──
   var badges=[]; var banners=[];
-  var nowMs=s.serverNow||Date.now();
-  var skew=Date.now()-nowMs; // align server time to local clock for live ticking
+  var nowMs=nowMs0;
   // Token health
   if(t && t.exp){var tAt=parseInt(t.exp,10)*1000+skew;
     if(tAt-Date.now()>0)badges.push('<span class="badge good">● Token valid <b data-bcd="'+tAt+'"></b></span>');
     else badges.push('<span class="badge bad">● Token EXPIRED</span>');
   } else badges.push('<span class="badge bad">● No token</span>');
-  // Relay health (last push/mint time)
-  if(s.lastMintAt){var rAt=s.lastMintAt+skew;var rAgo=Date.now()-rAt;
-    if(rAgo<13*3600000)badges.push('<span class="badge good">● Relay pushed <b data-bago="'+rAt+'"></b> ago</span>');
-    else badges.push('<span class="badge bad">● Relay silent <b data-bago="'+rAt+'"></b></span>');
+  // Relay health — use the STORED token's mint time (survives server restarts),
+  // not the in-memory _lastMintAt which resets whenever Render restarts/sleeps.
+  // Prefer token.mintedAt; fall back to lastMintAt only if no token timestamp.
+  if(lastPushMs){var rAt=lastPushMs+skew;var rAgo=Date.now()-rAt;
+    var srcLabel = (t && t.source) ? t.source : 'relay';
+    if(rAgo<13*3600000)badges.push('<span class="badge good">● '+srcLabel+' pushed <b data-bago="'+rAt+'"></b> ago</span>');
+    else badges.push('<span class="badge bad">● '+srcLabel+' silent <b data-bago="'+rAt+'"></b></span>');
     if(rAgo>=13*3600000)banners.push(['bad','⚠ No fresh token in '+fmtDuration(rAgo)+'. All relay phones may be offline — customers will stop streaming soon. Check the Termux phones.']);
   } else badges.push('<span class="badge warn">● Relay never pushed</span>');
   // Bearer expiry
@@ -725,7 +741,7 @@ async function refreshStatus(){
 
   // ── Hero strip: one-line overall system health ──
   var tokenOk = !!(t && t.exp && (parseInt(t.exp,10)*1000+skew)>Date.now());
-  var relayOk = !!(s.lastMintAt && (Date.now()-(s.lastMintAt+skew))<13*3600000);
+  var relayOk = !!(lastPushMs && (Date.now()-(lastPushMs+skew))<13*3600000);
   var bearerMs = (c && c.bearerExp) ? (parseInt(c.bearerExp,10)*1000+skew - Date.now()) : null;
   var bearerOk = bearerMs===null ? false : bearerMs>0;
   var bearerWarn = bearerOk && bearerMs<3*86400000;
