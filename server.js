@@ -507,6 +507,7 @@ function dashboardHtml() {
 <form method="post" action="/admin/logout" style="margin:0"><button class="ghost" type="submit">Logout</button></form>
 </header>
 <main>
+  <div id="hero"></div>
   <div id="alert-banner"></div>
   <section class="card" id="status-card"><h2>Status</h2><div id="health-badges" class="badges"></div><div id="status">loading…</div>
     <div class="row"><button id="refresh-btn">Mint new token now</button></div>
@@ -617,6 +618,27 @@ pre { background:#0a0a0a; border:1px solid #222; border-radius:6px; padding:12px
 .cd-pill.warn { color:#ffce6b; background:rgba(255,206,107,.10); border-color:rgba(255,206,107,.30); animation:cdpulse 1.4s ease-in-out infinite; }
 .cd-pill.bad  { color:#ff8a8a; background:rgba(255,138,138,.10); border-color:rgba(255,138,138,.35); }
 @keyframes cdpulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+.hero { display:flex; align-items:center; gap:16px; padding:16px 20px; border-radius:14px; border:1px solid #232327; position:relative; overflow:hidden; }
+.hero.good { background:linear-gradient(100deg,rgba(92,240,154,.12),rgba(20,20,22,.6)); border-color:rgba(92,240,154,.3); }
+.hero.warn { background:linear-gradient(100deg,rgba(255,206,107,.12),rgba(20,20,22,.6)); border-color:rgba(255,206,107,.35); }
+.hero.bad  { background:linear-gradient(100deg,rgba(255,138,138,.14),rgba(20,20,22,.6)); border-color:rgba(255,138,138,.4); }
+.hero-dot { position:relative; width:14px; height:14px; flex:none; }
+.hero-dot .dot { position:absolute; inset:0; margin:auto; width:12px; height:12px; border-radius:50%; }
+.hero-dot .ping { position:absolute; inset:0; margin:auto; width:12px; height:12px; border-radius:50%; animation:ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
+.hero.good .dot,.hero.good .ping { background:#5cf09a; }
+.hero.warn .dot,.hero.warn .ping { background:#ffce6b; }
+.hero.bad .dot,.hero.bad .ping  { background:#ff8a8a; }
+@keyframes ping { 0%{transform:scale(1);opacity:.7} 75%,100%{transform:scale(2.6);opacity:0} }
+.hero-text { flex:1; min-width:0; }
+.hero-title { font-size:15px; font-weight:600; }
+.hero.good .hero-title { color:#9bf3c0; } .hero.warn .hero-title { color:#ffd98a; } .hero.bad .hero-title { color:#ffaaaa; }
+.hero-sub { font-size:13px; color:#bbb; margin-top:2px; }
+.hero-meta { display:flex; gap:6px; flex:none; }
+.hero-chip { font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:3px 8px; border-radius:6px; border:1px solid #333; }
+.hero-chip.good { color:#5cf09a; border-color:rgba(92,240,154,.3); background:rgba(92,240,154,.08); }
+.hero-chip.warn { color:#ffce6b; border-color:rgba(255,206,107,.3); background:rgba(255,206,107,.08); }
+.hero-chip.bad  { color:#ff8a8a; border-color:rgba(255,138,138,.35); background:rgba(255,138,138,.1); }
+@media (max-width:560px){ .hero-meta{display:none} }
 `;
 
 const DASHBOARD_JS = `
@@ -700,6 +722,34 @@ async function refreshStatus(){
   }
   document.getElementById('health-badges').innerHTML=badges.join('');
   document.getElementById('alert-banner').innerHTML=banners.map(function(b){return '<div class="banner '+b[0]+'">'+b[1]+'</div>';}).join('');
+
+  // ── Hero strip: one-line overall system health ──
+  var tokenOk = !!(t && t.exp && (parseInt(t.exp,10)*1000+skew)>Date.now());
+  var relayOk = !!(s.lastMintAt && (Date.now()-(s.lastMintAt+skew))<13*3600000);
+  var bearerMs = (c && c.bearerExp) ? (parseInt(c.bearerExp,10)*1000+skew - Date.now()) : null;
+  var bearerOk = bearerMs===null ? false : bearerMs>0;
+  var bearerWarn = bearerOk && bearerMs<3*86400000;
+  var heroState, heroIcon, heroMsg;
+  if(tokenOk && relayOk && bearerOk && !bearerWarn){
+    heroState='good'; heroIcon='✓'; heroMsg='All systems operational — customers are streaming.';
+  } else if(!tokenOk || !relayOk || (bearerMs!==null && bearerMs<=0)){
+    heroState='bad'; heroIcon='✕';
+    heroMsg = !tokenOk ? 'No valid token — streaming is down.' : (!relayOk ? 'Relay is silent — token will lapse soon.' : 'Bearer expired — minting is dead.');
+  } else {
+    heroState='warn'; heroIcon='!';
+    heroMsg = bearerWarn ? 'Operational, but the Bearer expires soon — recapture it.' : 'Operational with warnings — check status below.';
+  }
+  document.getElementById('hero').innerHTML=
+    '<div class="hero '+heroState+'">'+
+      '<div class="hero-dot"><span class="ping"></span><span class="dot"></span></div>'+
+      '<div class="hero-text"><div class="hero-title">'+heroIcon+' '+(heroState==='good'?'System healthy':(heroState==='bad'?'Action needed':'Heads up'))+'</div>'+
+      '<div class="hero-sub">'+heroMsg+'</div></div>'+
+      '<div class="hero-meta">'+
+        (tokenOk?'<span class="hero-chip good">token</span>':'<span class="hero-chip bad">token</span>')+
+        (relayOk?'<span class="hero-chip good">relay</span>':'<span class="hero-chip bad">relay</span>')+
+        (bearerOk?'<span class="hero-chip '+(bearerWarn?'warn':'good')+'">bearer</span>':'<span class="hero-chip bad">bearer</span>')+
+      '</div>'+
+    '</div>';
 
   // keys
   const tb=document.querySelector('#keys-table tbody'); tb.innerHTML='';
